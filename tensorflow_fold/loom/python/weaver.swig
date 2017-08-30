@@ -243,6 +243,7 @@ using tensorflow::string;
 %unignore tensorflow::fold::Weaver::GetTypeShape;
 %unignore tensorflow::fold::Weaver::GetNamedTensor;
 %unignore tensorflow::fold::Weaver::MakeConstantSerialized;
+%unignore tensorflow::fold::Weaver::MergeFromSerialized;
 %unignore tensorflow::fold::Weaver::BatchInput;
 %unignore tensorflow::fold::Weaver::CallOp;
 %unignore tensorflow::fold::Weaver::AddOutput;
