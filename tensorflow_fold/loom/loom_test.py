@@ -60,6 +60,9 @@ def group_values(xs, group_size):
 
 class LoomTest(tf.test.TestCase):
 
+  def setUp(self):
+    self.use_tensor_array = False
+
   def test_type_shape(self):
     self.assertEqual(loom.TypeShape('float32', ()).dtype, 'float32')
     self.assertRaises(TypeError, loom.TypeShape, np.float32, ())
@@ -80,21 +83,21 @@ class LoomTest(tf.test.TestCase):
     shape = loom.TypeShape('int64', (500,))
     ops = {'add': BinaryLoomOp(shape, tf.add),
            'mul': BinaryLoomOp(shape, tf.multiply)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     self.assertEqual([shape], the_loom.type_shapes)
 
   def test_loom_build_graph(self):
     shape = loom.TypeShape('int64', (500,))
     ops = {'add': BinaryLoomOp(shape, tf.add),
            'mul': BinaryLoomOp(shape, tf.multiply)}
-    _ = loom.Loom(named_ops=ops)
+    _ = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
 
   def test_loom_type_shapes2(self):
     shape1 = loom.TypeShape('float32', (20,))
     shape2 = loom.TypeShape('float32', (30,))
     ops = {'add': BinaryLoomOp(shape1, tf.add),
            'mul': BinaryLoomOp(shape2, tf.multiply)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     self.assertEqual([shape1, shape2], the_loom.type_shapes)
 
   def test_loom_type_shapes2_get_type_shape(self):
@@ -102,7 +105,7 @@ class LoomTest(tf.test.TestCase):
     shape2 = loom.TypeShape('float32', (30,))
     ops = {'add': BinaryLoomOp(shape1, tf.add),
            'mul': BinaryLoomOp(shape2, tf.multiply)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     weaver = the_loom.make_weaver()
     self.assertEqual(
         weaver.get_type_shape(weaver(np.zeros((20,), 'float32'))),
@@ -116,7 +119,7 @@ class LoomTest(tf.test.TestCase):
     shape2 = loom.TypeShape('float32', (30,))
     ops = {'add': BinaryLoomOp(shape1, tf.add),
            'mul': BinaryLoomOp(shape2, tf.multiply)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     self.assertEqual([None, 20],
                      the_loom.output_tensor(shape1).get_shape().as_list())
     self.assertEqual([None, 30],
@@ -127,13 +130,13 @@ class LoomTest(tf.test.TestCase):
     shape2 = loom.TypeShape('float32', (20,), 'bob')
     ops = {'add': BinaryLoomOp(shape1, tf.add),
            'mul': BinaryLoomOp(shape2, tf.multiply)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     self.assertEqual([shape1, shape2], the_loom.type_shapes)
 
   def test_good_constant(self):
     shape = loom.TypeShape('int64', (3,))
     ops = {'add': BinaryLoomOp(shape, tf.add)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     weaver = the_loom.make_weaver()
     self.assertTrue(weaver(np.array([1, 2, 3], dtype='int64'))
                     is not None)
@@ -142,7 +145,7 @@ class LoomTest(tf.test.TestCase):
     shape = loom.TypeShape('int64', (3,))
     value = np.array([1, 2, 3], dtype='int64')
     ops = {'add': BinaryLoomOp(shape, tf.add)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     output_tensor = the_loom.output_tensor(shape)
     with self.test_session():
       weaver = the_loom.make_weaver()
@@ -154,7 +157,7 @@ class LoomTest(tf.test.TestCase):
     shape = loom.TypeShape('int64', (3,))
     value = np.array([1, 2, 3], dtype='int64')
     ops = {'add': BinaryLoomOp(shape, tf.add)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     output_tensor = the_loom.output_tensor(shape)
     with self.test_session():
       weaver = the_loom.make_weaver()
@@ -169,7 +172,7 @@ class LoomTest(tf.test.TestCase):
     value2 = np.array([4, 5, 6], dtype='int64')
     ops = {'add1': BinaryLoomOp(shape1, tf.add),
            'add2': BinaryLoomOp(shape2, tf.add)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     output_tensor1 = the_loom.output_tensor(shape1)
     output_tensor2 = the_loom.output_tensor(shape2)
     with self.test_session():
@@ -208,7 +211,8 @@ class LoomTest(tf.test.TestCase):
   def test_simple_sum_network(self):
     shape = loom.TypeShape('int64', (3,))
     ops = {'add': BinaryLoomOp(shape, tf.add)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array,
+        max_depth=2)
     output_tensor = the_loom.output_tensor(shape)
     with self.test_session():
       weaver = the_loom.make_weaver()
@@ -222,7 +226,8 @@ class LoomTest(tf.test.TestCase):
   def test_simple_sum_network_with_max_depth(self):
     shape = loom.TypeShape('int64', (3,))
     ops = {'add': BinaryLoomOp(shape, tf.add)}
-    the_loom = loom.Loom(max_depth=2, named_ops=ops)
+    the_loom = loom.Loom(max_depth=2, named_ops=ops,
+        use_tensor_array=self.use_tensor_array)
     output_tensor = the_loom.output_tensor(shape)
     with self.test_session():
       weaver = the_loom.make_weaver()
@@ -237,7 +242,8 @@ class LoomTest(tf.test.TestCase):
     batch_vectors = tf.placeholder('int64')
     shape = loom.TypeShape('int64', (3,))
     ops = {'add': BinaryLoomOp(shape, tf.add)}
-    the_loom = loom.Loom(named_ops=ops, batch_inputs={shape: batch_vectors})
+    the_loom = loom.Loom(named_ops=ops, batch_inputs={shape: batch_vectors},
+        use_tensor_array=self.use_tensor_array)
     output_tensor = the_loom.output_tensor(shape)
     with self.test_session():
       weaver = the_loom.make_weaver()
@@ -252,7 +258,7 @@ class LoomTest(tf.test.TestCase):
   def test_two_layer_sum_network(self):
     shape = loom.TypeShape('int64', (3,))
     ops = {'add': BinaryLoomOp(shape, tf.add)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     output_tensor = the_loom.output_tensor(shape)
     with self.test_session():
       weaver = the_loom.make_weaver()
@@ -270,7 +276,7 @@ class LoomTest(tf.test.TestCase):
   def test_three_layer_sum_network(self):
     shape = loom.TypeShape('int64', (3,))
     ops = {'add': BinaryLoomOp(shape, tf.add)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     output_tensor = the_loom.output_tensor(shape)
 
     with self.test_session():
@@ -288,7 +294,7 @@ class LoomTest(tf.test.TestCase):
     shape = loom.TypeShape('int64', (3,))
     ops = {'add': BinaryLoomOp(shape, tf.add),
            'mul': BinaryLoomOp(shape, tf.multiply)}
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     output_tensor = the_loom.output_tensor(shape)
     with self.test_session():
       weaver = the_loom.make_weaver()
@@ -306,7 +312,8 @@ class LoomTest(tf.test.TestCase):
     named_tensors = {'c1': tf.constant([1, 2, 3], dtype='int64')}
     ops = {'add': BinaryLoomOp(shape, tf.add),
            'mul': BinaryLoomOp(shape, tf.multiply)}
-    the_loom = loom.Loom(named_tensors=named_tensors, named_ops=ops)
+    the_loom = loom.Loom(named_tensors=named_tensors, named_ops=ops,
+        use_tensor_array=self.use_tensor_array)
     output_tensor = the_loom.output_tensor(shape)
     with self.test_session():
       weaver1 = the_loom.make_weaver()
@@ -339,7 +346,8 @@ class LoomTest(tf.test.TestCase):
     ops = {'add': BinaryLoomOp(shape, tf.add),
            'mul': BinaryLoomOp(shape, tf.multiply)}
     the_loom = loom.Loom(named_tensors=named_tensors, named_ops=ops,
-                         loom_input_tensor=loom_input_tensor)
+                         loom_input_tensor=loom_input_tensor,
+                         use_tensor_array=self.use_tensor_array)
     output_tensor = the_loom.output_tensor(shape)
     with self.test_session():
       weaver1 = the_loom.make_weaver()
@@ -375,7 +383,8 @@ class LoomTest(tf.test.TestCase):
         'c2': (tf.constant(np.array([2, 4, 6], dtype='int64')), 'x'),
         'c3': (tf.constant(np.array([3, 6, 9], dtype='int64')), 'x')
     }
-    the_loom = loom.Loom(named_ops=ops, named_tensors=named_tensors)
+    the_loom = loom.Loom(named_ops=ops, named_tensors=named_tensors,
+        use_tensor_array=self.use_tensor_array)
     output_tensor = the_loom.output_tensor(shape)
     with self.test_session():
       weaver = the_loom.make_weaver()
@@ -394,7 +403,7 @@ class LoomTest(tf.test.TestCase):
            'add6': BinaryLoomOp(shape6, tf.add),
            'cat': cat_op}
 
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     output_tensor = the_loom.output_tensor(shape6)
     with self.test_session():
       weaver = the_loom.make_weaver()
@@ -430,7 +439,7 @@ class LoomTest(tf.test.TestCase):
            'add6': BinaryLoomOp(shape6, tf.add),
            'cat': cat_op}
 
-    the_loom = loom.Loom(named_ops=ops)
+    the_loom = loom.Loom(named_ops=ops, use_tensor_array=self.use_tensor_array)
     output_tensor = the_loom.output_tensor(shape6)
     with self.test_session():
       weaver = the_loom.make_weaver()
@@ -461,7 +470,8 @@ class LoomTest(tf.test.TestCase):
     shape = loom.TypeShape('float64', (3,))
     ops = {'add': BinaryLoomOp(shape, tf.add),
            'mul': BinaryLoomOp(shape, tf.multiply)}
-    the_loom = loom.Loom(named_tensors={'x': x_var}, named_ops=ops)
+    the_loom = loom.Loom(named_tensors={'x': x_var}, named_ops=ops,
+        use_tensor_array=self.use_tensor_array)
 
     output_tensor = the_loom.output_tensor(shape)
     output = tf.reduce_sum(output_tensor)
@@ -484,7 +494,8 @@ class LoomTest(tf.test.TestCase):
     ops = {'add': BinaryLoomOp(shape, tf.add),
            'mul': BinaryLoomOp(shape, tf.multiply)}
     the_loom = loom.Loom(named_tensors={'x': x_var}, named_ops=ops,
-                         direct_feed_dict=True)
+                         direct_feed_dict=True,
+                         use_tensor_array=self.use_tensor_array)
 
     output_tensor = the_loom.output_tensor(shape)
     output = tf.reduce_sum(output_tensor)
@@ -500,6 +511,12 @@ class LoomTest(tf.test.TestCase):
       result = gradient.eval(feed_dict=weaver.build_feed_dict([mx_plus_b]))
     self.assertTrue((result == np.array(
         [1.0, 2.0, 3.0], dtype='float64')).all())
+
+
+class LoomTestWithTensorArrays(LoomTest):
+
+  def setUp(self):
+    self.use_tensor_array = True
 
 
 if __name__ == '__main__':

@@ -250,6 +250,7 @@ using tensorflow::string;
 %unignore tensorflow::fold::Weaver::Finalize;
 %unignore tensorflow::fold::Weaver::GetWiring;
 %unignore tensorflow::fold::Weaver::GetOutputWiring;
+%unignore tensorflow::fold::Weaver::GetNumResultsPerTypeShape;
 
 %include "tensorflow_fold/loom/weaver.h"
 

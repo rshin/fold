@@ -50,6 +50,8 @@ message LoomMetadata {
     repeated int32 output_ts_idx = 3;
   }
   repeated OpMetadata op_metadata = 3;
+
+  optional bool use_tensor_array = 4;
 }
 
 // WeaverMessage contains the wiring diagram (or schedule) which drives the
@@ -83,6 +85,7 @@ message WeaverMessage {
   }
 
   repeated WiringMessage wiring = 8;
+  repeated WiringMessage op_output_wiring = 11;
 
   // The result IDs marked as outputs using `Weaver::AddOutput`.
   repeated int32 output_result_id = 9 [packed=true];

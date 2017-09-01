@@ -145,6 +145,10 @@ bool VerifyLoomMetadata(const LoomMetadata &metadata, string *error_string) {
       }
     }
   }
+  if (metadata.use_tensor_array()) {
+    // No need to look for passthrough ops.
+    return true;
+  }
 
   if (num_type_shapes > num_ops) {
     *error_string = StrCat(
@@ -190,6 +194,7 @@ Weaver::Weaver(const string &serialized_loom_metadata) {
   if (!VerifyLoomMetadata(metadata_, &error_string_)) return;
 
   max_depth_ = metadata_.max_depth();
+  use_tensor_array_ = metadata_.use_tensor_array();
 
   num_type_shapes_ = metadata_.type_shape_metadata_size();
   type_shapes_.resize(num_type_shapes_);
@@ -233,7 +238,10 @@ void Weaver::Reset() {
   loom_results_.clear();
   output_result_ids_.clear();
   wiring_results_.clear();
+  op_output_wiring_results_.clear();
   final_wiring_.clear();
+  // final_op_output_wiring_.clear();
+  num_results_per_type_shape_.clear();
   final_output_wiring_.clear();
 }
 
@@ -270,6 +278,18 @@ string Weaver::Serialize() const {
     tensor_idx_t depth, op_idx, arg_idx;
     std::tie(depth, op_idx, arg_idx) = pair.first;
     auto *wiring = message.add_wiring();
+    wiring->set_depth(depth);
+    wiring->set_op_idx(op_idx);
+    wiring->set_arg_idx(arg_idx);
+    for (tensor_idx_t result_id : pair.second) {
+      wiring->add_result_id(result_id);
+    }
+  }
+
+  for (const auto &pair : op_output_wiring_results_) {
+    tensor_idx_t depth, op_idx, arg_idx;
+    std::tie(depth, op_idx, arg_idx) = pair.first;
+    auto *wiring = message.add_op_output_wiring();
     wiring->set_depth(depth);
     wiring->set_op_idx(op_idx);
     wiring->set_arg_idx(arg_idx);
@@ -333,6 +353,14 @@ bool Weaver::Deserialize(const string &weaver_message) {
         w.result_id().begin(), w.result_id().end());
     auto key = std::make_tuple(w.depth(), w.op_idx(), w.arg_idx());
     wiring_results_.emplace_hint(wiring_results_.end(), key, result_ids);
+  }
+
+  for (const auto &w : message.op_output_wiring()) {
+    std::vector<tensor_idx_t> result_ids(
+        w.result_id().begin(), w.result_id().end());
+    auto key = std::make_tuple(w.depth(), w.op_idx(), w.arg_idx());
+    op_output_wiring_results_.emplace_hint(op_output_wiring_results_.end(), key,
+                                           result_ids);
   }
 
   output_result_ids_.insert(
@@ -549,17 +577,22 @@ std::vector<tensor_idx_t> Weaver::CallOp(tensor_idx_t op_idx,
     }
   }
 
+  if (use_tensor_array_) {
+    return CallOpInternal(op_idx, args, max_arg_depth);
+  }
+
   std::vector<tensor_idx_t> deepened_args;
   for (tensor_idx_t arg : args) {
     deepened_args.push_back(Deepen(arg, max_arg_depth));
   }
 
-  return AlignedCallOp(op_idx, deepened_args);
+  return CallOpInternal(op_idx, deepened_args, max_arg_depth);
 }
 
-std::vector<tensor_idx_t> Weaver::AlignedCallOp(
-    tensor_idx_t op_idx, const std::vector<tensor_idx_t> &args) {
-  tensor_idx_t depth = loom_results_[args[0]].depth + 1;
+std::vector<tensor_idx_t> Weaver::CallOpInternal(
+    tensor_idx_t op_idx, const std::vector<tensor_idx_t> &args,
+    tensor_idx_t max_arg_depth) {
+  tensor_idx_t depth = max_arg_depth + 1;
   if (deepest_ < depth) {
     deepest_ = depth;
   }
@@ -572,7 +605,8 @@ std::vector<tensor_idx_t> Weaver::AlignedCallOp(
 
   std::vector<tensor_idx_t> result_ids;
   for (tensor_idx_t i = 0; i < op_output_ts_idx_[op_idx].size(); ++i) {
-    result_ids.push_back(loom_results_.size());
+    tensor_idx_t result_id = loom_results_.size();
+    result_ids.push_back(result_id);
     loom_results_.emplace_back();
     LoomResult &r = loom_results_.back();
     r.depth = depth;
@@ -580,21 +614,28 @@ std::vector<tensor_idx_t> Weaver::AlignedCallOp(
     r.op_idx = op_idx;
     r.op_output_idx = i;
     r.pos_idx = pos_idx;
+
+    if (use_tensor_array_) {
+      op_output_wiring_results_[std::make_tuple(depth, op_idx, i)].push_back(
+          result_id);
+    }
   }
 
   return result_ids;
 }
 
 tensor_idx_t Weaver::Deepen(tensor_idx_t result_id, tensor_idx_t target_depth) {
+  CHECK(!use_tensor_array_);
   tensor_idx_t ts_idx = loom_results_[result_id].ts_idx;
   tensor_idx_t num_deepenings = target_depth - loom_results_[result_id].depth;
   for (tensor_idx_t i = 0; i < num_deepenings; ++i) {
     if (loom_results_[result_id].cached_passthrough == -1) {
-      // Note: This AlignedCallOp creates a passthrough because it's relying on
+      // Note: This CallOpInternal creates a passthrough because it's relying on
       // the fact that the first `num_type_shapes_` ops are PassThroughs
       // associated with the corresponding TypeShapes.  So `ts_idx` is also the
       // index of the corresponding passthrough op.
-      tensor_idx_t new_result_id = AlignedCallOp(ts_idx, {result_id})[0];
+      tensor_idx_t new_result_id = CallOpInternal(
+          ts_idx, {result_id}, loom_results_[result_id].depth)[0];
 
       loom_results_[result_id].cached_passthrough = new_result_id;
       result_id = new_result_id;
@@ -706,6 +747,16 @@ bool Weaver::MergeFromSerialized(const string &other) {
     }
   }
 
+  // Copy over message.op_output_wiring into op_output_wiring_results_
+  // (Shifting all the result IDs by result_id_offset.)
+  for (const auto &w : message.op_output_wiring()) {
+    auto &ids = op_output_wiring_results_[
+        std::make_tuple(w.depth(), w.op_idx(), w.arg_idx())];
+    for (tensor_idx_t result_id : w.result_id()) {
+      ids.push_back(result_id_offset + result_id);
+    }
+  }
+
   // Copy over outputs_result_ids (shifting by result_id_offset.)
   for (tensor_idx_t result_id : message.output_result_id()) {
     output_result_ids_.push_back(result_id_offset + result_id);
@@ -722,6 +773,74 @@ void Weaver::Finalize() {
     max_depth_ = Deepest();
   }
 
+  if (use_tensor_array_) {
+    FinalizeTensorArray();
+  } else {
+    FinalizeConventional();
+  }
+
+}
+
+void Weaver::FinalizeTensorArray() {
+  std::vector<tensor_idx_t> result_id_to_type_shape_ta_idx(loom_results_.size(),
+                                                           -1);
+  num_results_per_type_shape_.resize(num_type_shapes_);
+
+  // Map each LoomResult from an op to an index for the TensorArray of that
+  // TypeShape.  Do this so that the outputs of an op are contiguous.
+  for (tensor_idx_t depth = 1; depth <= max_depth_; ++depth) {
+    for (tensor_idx_t op_idx = 0; op_idx < num_ops_; ++op_idx) {
+      for (tensor_idx_t output_idx = 0;
+           output_idx < op_output_ts_idx_[op_idx].size(); ++output_idx) {
+        tensor_idx_t ts_idx = op_output_ts_idx_[op_idx][output_idx];
+        for (tensor_idx_t id : op_output_wiring_results_[std::make_tuple(
+                 depth, op_idx, output_idx)]) {
+          result_id_to_type_shape_ta_idx[id] =
+              num_results_per_type_shape_[ts_idx]++;
+        }
+      }
+    }
+  }
+
+  // Map LoomResults for constants, batch inputs, and constants.
+  // We don't know in advance how many batch inputs there will be, so we put
+  // them in a contiguous block at the end of the TensorArray.
+  for (tensor_idx_t i = 0; i < loom_results_.size(); ++i) {
+    const auto &loom_result = loom_results_[i];
+    if (loom_result.depth != 0) {
+      continue;
+    }
+    result_id_to_type_shape_ta_idx[i] =
+        num_results_per_type_shape_[loom_result.ts_idx] + loom_result.pos_idx;
+  }
+
+  // Populate 'final_wiring_' and final_op_output_wiring_ with the values that
+  // will end up in the wiring diagram placeholder variables in the loom.
+  for (tensor_idx_t depth = 1; depth <= max_depth_; ++depth) {
+    for (tensor_idx_t op_idx = 0; op_idx < num_ops_; ++op_idx) {
+      for (tensor_idx_t arg_idx = 0; arg_idx < op_input_ts_idx_[op_idx].size();
+           ++arg_idx) {
+        auto key = std::make_tuple(depth, op_idx, arg_idx);
+        const std::vector<tensor_idx_t> &my_wiring_results =
+            wiring_results_[key];
+        std::vector<tensor_idx_t> &my_final_wiring = final_wiring_[key];
+        for (tensor_idx_t result_id : my_wiring_results) {
+          my_final_wiring.push_back(result_id_to_type_shape_ta_idx[result_id]);
+        }
+      }
+    }
+  }
+
+  // Populate 'final_output_wiring_'
+  final_output_wiring_.resize(num_type_shapes_);
+  for (tensor_idx_t output_result_id : output_result_ids_) {
+    const LoomResult &r = loom_results_[output_result_id];
+    final_output_wiring_[r.ts_idx].push_back(
+        result_id_to_type_shape_ta_idx[output_result_id]);
+  }
+}
+
+void Weaver::FinalizeConventional() {
   // Add PassThroughs so that all the outputs are at the 'max_depth_'.
   std::vector<tensor_idx_t> deepened_outputs;
   for (tensor_idx_t output_result_id : output_result_ids_) {

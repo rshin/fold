@@ -34,6 +34,7 @@ namespace fold {
       .Output("out_2_arg_wiring_slice_sizes: int32")                         \
       .Output("out_3_output_wiring: num_type_shapes * int32")                \
       .Output("out_4_constants: constant_types")                             \
+      .Output("out_5_num_results_per_type_shape: int32")                     \
       .SetShapeFn([](tensorflow::shape_inference::InferenceContext *c) {     \
         int32 num_type_shapes;                                               \
         TF_RETURN_IF_ERROR(c->GetAttr("num_type_shapes", &num_type_shapes)); \
@@ -44,6 +45,7 @@ namespace fold {
         for (int32 j = 0; j < num_type_shapes; ++j) {                        \
           c->set_output(i++, c->UnknownShape());                             \
         }                                                                    \
+        c->set_output(i++, c->Vector(c->UnknownDim()));                      \
                                                                              \
         return tensorflow::Status::OK();                                     \
       })

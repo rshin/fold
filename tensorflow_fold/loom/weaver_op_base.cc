@@ -125,6 +125,9 @@ void WeaverOpBase::Compute(OpKernelContext *c) {
   for (tensor_idx_t ts_idx = 0; ts_idx < num_type_shapes_; ++ts_idx) {
     constants_list.set(ts_idx, weaver.BatchConstantValues(ts_idx));
   }
+
+  OP_REQUIRES_OK(c, OutputTensorIdxVector(c, 3 + num_type_shapes_ * 2,
+                                          weaver.GetNumResultsPerTypeShape()));
 }
 
 tensorflow::Status WeaverOpBase::FindOp(
