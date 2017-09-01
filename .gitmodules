@@ -1,4 +1,4 @@
 [submodule "tensorflow"]
 	path = tensorflow
-	url = https://github.com/tensorflow/tensorflow
-	branch = r1.0
+	url = https://github.com/rshin/tensorflow
+	branch = r1.3-patched
