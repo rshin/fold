@@ -34,6 +34,7 @@ from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
 from tensorflow_fold.loom import deserializing_weaver_op
+from tensorflow_fold.loom import merge_weavers_op
 from tensorflow_fold.loom import loom_pb2
 from tensorflow_fold.loom import pywrapweaver
 

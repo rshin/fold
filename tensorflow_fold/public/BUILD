@@ -21,6 +21,7 @@ fold_cc_library(
     hdrs = ["loom.h"],
     deps = [
         "//tensorflow_fold/loom:deserializing_weaver_op_cc",
+        "//tensorflow_fold/loom:merge_weavers_op_cc",
         "//tensorflow_fold/loom:weaver",
         "//tensorflow_fold/loom:weaver_op_base",
     ],

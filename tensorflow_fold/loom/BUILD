@@ -94,6 +94,7 @@ fold_cc_library(
         ":weaver",
         "@org_tensorflow//tensorflow/core:framework_headers_lib",
     ],
+    alwayslink = 1,
 )
 
 fold_tf_op_py(

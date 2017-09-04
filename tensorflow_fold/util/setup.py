@@ -154,6 +154,7 @@ setup(
         ],
         'tensorflow_fold.loom': [
             '_deserializing_weaver_op.so',
+            '_merge_weavers_op.so',
             '_pywrapweaver.so',
         ],
     },
