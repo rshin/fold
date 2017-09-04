@@ -438,18 +438,21 @@ class Weaver {
 
   // _wiring: maps (depth, op_idx, arg_idx) to  a vector of result_ids.  This
   // vector shows which results are being used as the inputs of which op calls.
-  std::map<std::tuple<tensor_idx_t, tensor_idx_t, tensor_idx_t>,
-           std::vector<tensor_idx_t> > wiring_results_;
+  std::unordered_map<std::tuple<tensor_idx_t, tensor_idx_t, tensor_idx_t>,
+                     std::vector<tensor_idx_t>>
+      wiring_results_;
 
   // Key: depth, op_idx, op_output_idx
   // Value: LoomResult IDs for those calls
-  std::map<std::tuple<tensor_idx_t, tensor_idx_t, tensor_idx_t>,
-           std::vector<tensor_idx_t> > op_output_wiring_results_;
+  std::unordered_map<std::tuple<tensor_idx_t, tensor_idx_t, tensor_idx_t>,
+                     std::vector<tensor_idx_t>>
+      op_output_wiring_results_;
 
   // final_wiring_: maps (depth, op_idx, arg_idx) to a vector of integers to be
   // used by the loom.  Populated by finalize.
-  std::map<std::tuple<tensor_idx_t, tensor_idx_t, tensor_idx_t>,
-           std::vector<tensor_idx_t> > final_wiring_;
+  std::unordered_map<std::tuple<tensor_idx_t, tensor_idx_t, tensor_idx_t>,
+                     std::vector<tensor_idx_t>>
+      final_wiring_;
 
   // results_per_type_shape_: Counts how many LoomResults (output by LoomOps,
   // and not named tensors, constants, or batch inupts) exist for each
