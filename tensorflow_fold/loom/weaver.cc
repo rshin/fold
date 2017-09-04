@@ -351,7 +351,8 @@ string Weaver::Serialize() const {
   return result;
 }
 
-bool Weaver::Deserialize(const string &weaver_message) {
+bool Weaver::DeserializeInternal(const string &weaver_message,
+                                 bool will_finalize_immediately) {
   WeaverMessage message;
   if (!message.ParseFromString(weaver_message)) {
     error_string_ = "WeaverMessage couldn't be parsed.";
@@ -408,7 +409,7 @@ bool Weaver::Deserialize(const string &weaver_message) {
       message.output_result_id().begin(),
       message.output_result_id().end());
 
-  if (deduplicate_) {
+  if (deduplicate_ && !will_finalize_immediately) {
     // Fill cached_constant_values_.
     if (message.constant_values_result_ids_size() !=
         message.constant_values_by_type_shape_size()) {

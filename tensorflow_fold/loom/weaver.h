@@ -179,7 +179,12 @@ class Weaver {
   ///
   /// WARNING: does almost no checking as to whether the contents of
   /// `serialized_weaver` are valid.
-  bool Deserialize(const string &serialized_weaver);
+  bool Deserialize(const string &serialized_weaver) {
+    return DeserializeInternal(serialized_weaver, false);
+  }
+  bool DeserializeOnce(const string &serialized_weaver) {
+    return DeserializeInternal(serialized_weaver, true);
+  }
 
   /// Returns the maximum depth of this scheduler.
   tensor_idx_t MaxDepth() const {
@@ -338,6 +343,8 @@ class Weaver {
   }
 
  private:
+    bool DeserializeInternal(const string &serialized_weaver,
+                             bool will_finalize_immediately);
   // Internal portion of CallOp which assumes all args have the same depth, and
   // have the correct typeshape.
   std::vector<tensor_idx_t> CallOpInternal(

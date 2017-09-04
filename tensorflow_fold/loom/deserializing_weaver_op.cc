@@ -48,7 +48,9 @@ class DeserializingWeaverOp : public WeaverOpBase {
       return tensorflow::errors::InvalidArgument(
           "weaver_messages must contain at least one value.");
     }
-    if (!weaver->Deserialize(weaver_messages(0))) {
+    if (!(weaver_messages.size() == 1
+              ? weaver->DeserializeOnce(weaver_messages(0))
+              : weaver->Deserialize(weaver_messages(0)))) {
       return tensorflow::errors::Internal(
           "Failed to deserialize WeaverMessage: ", weaver->error_string());
     }
