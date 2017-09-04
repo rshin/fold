@@ -87,6 +87,24 @@ fold_cc_library(
     ],
 )
 
+fold_cc_library(
+    name = "merge_weavers_op_cc",
+    srcs = ["merge_weavers_op.cc"],
+    deps = [
+        ":weaver",
+        "@org_tensorflow//tensorflow/core:framework_headers_lib",
+    ],
+)
+
+fold_tf_op_py(
+    name = "merge_weavers_op",
+    srcs = ["merge_weavers_op.py"],
+    cc_deps = [":merge_weavers_op_cc"],
+    py_deps = [
+        "@org_tensorflow//tensorflow:tensorflow_py",
+    ],
+)
+
 fold_py_library(
     name = "weaver_op_base_py",
     srcs = ["weaver_op_base.py"],
@@ -125,6 +143,7 @@ fold_py_library(
     deps = [
         ":deserializing_weaver_op",
         ":loom_py_pb2",
+        ":merge_weavers_op",
         ":pywrapweaver",
         # numpy",
         "@org_tensorflow//tensorflow:tensorflow_py",

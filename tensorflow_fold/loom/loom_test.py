@@ -23,6 +23,7 @@ from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
 from tensorflow_fold.loom import loom
+from tensorflow_fold.loom import merge_weavers_op
 
 
 class BinaryLoomOp(loom.LoomOp):
@@ -386,6 +387,49 @@ class LoomTest(tf.test.TestCase):
 
       result = output_tensor.eval(
           feed_dict={loom_input_tensor: [input1_str, input2_str]})
+    self.assertTrue((result == np.array(
+        [[5, 20, 45], [8, 32, 72]], dtype='int64')).all())
+
+  def test_two_ops_network_with_external_merge(self):
+    loom_input_tensor = tf.placeholder('string')
+    shape = loom.TypeShape('int64', (3,))
+    named_tensors = {'c1': tf.constant([1, 2, 3], dtype='int64')}
+    ops = {'add': BinaryLoomOp(shape, tf.add),
+           'mul': BinaryLoomOp(shape, tf.multiply)}
+    the_loom = loom.Loom(named_tensors=named_tensors, named_ops=ops,
+                         loom_input_tensor=loom_input_tensor,
+                         use_tensor_array=self.use_tensor_array,
+                         deduplicate=self.deduplicate)
+    output_tensor = the_loom.output_tensor(shape)
+
+    merge_op_input = tf.placeholder('string')
+    merge_op = merge_weavers_op.merge_weavers(
+        merge_op_input, metadata=the_loom._loom_metadata_str)
+    with self.test_session():
+      weaver1 = the_loom.make_weaver()
+      c1 = weaver1.c1
+      c2 = weaver1(np.array([2, 4, 6], dtype='int64'))
+      c3 = weaver1(np.array([3, 6, 9], dtype='int64'))
+      sum_2_3 = weaver1.add(c2, c3)
+      sum_12_13 = weaver1.mul(c1, sum_2_3)
+      weaver1.add_output(sum_12_13)
+
+      weaver2 = the_loom.make_weaver()
+      c1 = weaver2.c1
+      c2 = weaver2(np.array([2, 4, 6], dtype='int64'))
+      c3 = weaver2(np.array([3, 6, 9], dtype='int64'))
+      sum_1_3 = weaver2.add(c1, c3)
+      sum_21_23 = weaver2.mul(c2, sum_1_3)
+      weaver2.add_output(sum_21_23)
+
+      input1_str = weaver1.serialize()
+      input2_str = weaver2.serialize()
+
+      merged = merge_op.eval(
+          feed_dict={merge_op_input: [input1_str, input2_str]})
+
+      result = output_tensor.eval(
+          feed_dict={loom_input_tensor: merged})
     self.assertTrue((result == np.array(
         [[5, 20, 45], [8, 32, 72]], dtype='int64')).all())
 
