@@ -255,8 +255,8 @@ class Loom(object):
   def __init__(self, max_depth=None, named_tensors=None, named_ops=None,
                batch_inputs=None, extra_type_shapes=None, dry_run=False,
                parallel_iterations=None, back_prop=None, swap_memory=None,
-               use_tensor_array=False, direct_feed_dict=False,
-               loom_input_tensor=None, weaver_op=None):
+               use_tensor_array=False, deduplicate=False,
+               direct_feed_dict=False, loom_input_tensor=None, weaver_op=None):
     """Constructs a Loom.
 
     While this constructor has many arguments, the only arguments most users
@@ -314,6 +314,10 @@ class Loom(object):
         False.
       use_tensor_array: Boolean. Store intermediate results in TensorArrays,
         which means that passthrough ops are not needed.
+      deduplicate: Boolean. If a constant, named tensor, batch input, or the
+        result of a call is deemed to be equivalent to an existing one, then
+        recycle the coresponding LoomResult instead of creating a new one.
+        Deduplication also occurs during merging of serialized WeaverMessages.
       direct_feed_dict: Boolean. If true, this loom doesn't create a loom_input
         tensor for WeaverMessages, and instead creates placeholders for the
         wiring diagrams. Default: False.
@@ -373,6 +377,7 @@ class Loom(object):
     self._back_prop = back_prop
     self._swap_memory = swap_memory
     self._use_tensor_array = use_tensor_array
+    self._deduplicate = deduplicate
 
     # _direct_feed_dict: a bool specifying whether to construct a graph which
     # bypasses the deserializing_weaver_op.
@@ -513,6 +518,7 @@ class Loom(object):
     loom_metadata = loom_pb2.LoomMetadata()
     loom_metadata.max_depth = self._max_depth
     loom_metadata.use_tensor_array = self._use_tensor_array
+    loom_metadata.deduplicate = self._deduplicate
     for ts, tensor_names in zip(
         self._type_shapes, self._ts_idx_to_tensor_names):
       type_shape_metadata = loom_metadata.type_shape_metadata.add()

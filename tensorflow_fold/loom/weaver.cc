@@ -13,6 +13,7 @@ limitations under the License.
 #include "tensorflow_fold/loom/weaver.h"
 
 #include <algorithm>
+#include <iostream>
 #include <numeric>
 #include <map>
 #include <tuple>
@@ -28,6 +29,22 @@ limitations under the License.
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/macros.h"
+
+#define LOOM_DEDUP_DEBUG 0
+
+#ifdef LOOM_DEDUP_DEBUG
+namespace std {
+template <typename T>
+std::ostream &operator<<(std::ostream &out, const std::vector<T> &v) {
+  if (!v.empty()) {
+    out << '[';
+    std::copy(v.begin(), v.end(), std::ostream_iterator<T>(out, ", "));
+    out << "\b\b]";
+  }
+  return out;
+}
+}
+#endif
 
 namespace tensorflow {
 namespace fold {
@@ -98,6 +115,13 @@ LoomResult LoomResultFromMessage(
   r.pos_idx = message.pos_idx(i);
   r.cached_passthrough = message.cached_passthrough(i);
   return r;
+}
+
+template <typename T>
+void enlarge(std::vector<T>* vec, tensor_idx_t idx) {
+  if (vec->size() <= idx) {
+    vec->resize(idx + 1);
+  }
 }
 
 }  // namespace
@@ -195,6 +219,7 @@ Weaver::Weaver(const string &serialized_loom_metadata) {
 
   max_depth_ = metadata_.max_depth();
   use_tensor_array_ = metadata_.use_tensor_array();
+  deduplicate_ = metadata_.deduplicate();
 
   num_type_shapes_ = metadata_.type_shape_metadata_size();
   type_shapes_.resize(num_type_shapes_);
@@ -240,7 +265,6 @@ void Weaver::Reset() {
   wiring_results_.clear();
   op_output_wiring_results_.clear();
   final_wiring_.clear();
-  // final_op_output_wiring_.clear();
   num_results_per_type_shape_.clear();
   final_output_wiring_.clear();
 }
@@ -300,6 +324,22 @@ string Weaver::Serialize() const {
 
   for (tensor_idx_t result_id : output_result_ids_) {
     message.add_output_result_id(result_id);
+  }
+
+  if (deduplicate_) {
+    for (tensor_idx_t ts_idx = 0; ts_idx < num_type_shapes_; ++ts_idx) {
+      message.add_constant_values_result_ids()
+          ->mutable_result_id()
+          ->Resize(num_constants_by_type_shape_[ts_idx], -1);
+    }
+
+    for (const auto& kv : cached_constant_values_) {
+      const auto& ts_idx_and_tensor = kv.first;
+      const CachedConstantValueEntry& entry = kv.second;
+
+      message.mutable_constant_values_result_ids(ts_idx_and_tensor.first)
+          ->set_result_id(entry.constant_value_idx, entry.result_id);
+    }
   }
 
   string result;
@@ -367,6 +407,80 @@ bool Weaver::Deserialize(const string &weaver_message) {
       output_result_ids_.end(),
       message.output_result_id().begin(),
       message.output_result_id().end());
+
+  if (deduplicate_) {
+    // Fill cached_constant_values_.
+    if (message.constant_values_result_ids_size() !=
+        message.constant_values_by_type_shape_size()) {
+      error_string_ = "WeaverMessage is missing constant_values_result_ids.";
+      return false;
+    }
+    for (tensor_idx_t ts_idx = 0; ts_idx < num_type_shapes_; ++ts_idx) {
+      const auto &result_ids =
+          message.constant_values_result_ids(ts_idx).result_id();
+      for (tensor_idx_t i = 0; i < result_ids.size(); ++i) {
+        CachedConstantValueEntry entry{result_ids[i], i, ts_idx};
+        cached_constant_values_.emplace(
+            std::make_pair(ts_idx, constant_values_by_type_shape_[ts_idx][i]),
+            std::move(entry));
+      }
+    }
+
+    // Fill cached_calls_.
+    // We take advantage of how LoomResults representing the different outputs
+    // of a single call are adjacent.
+    tensor_idx_t depth = -1, op_idx = -1, pos_idx = -1;
+    std::vector<tensor_idx_t> args, result_ids;
+    for (tensor_idx_t i = 0; i < loom_results_.size(); ++i) {
+      const LoomResult& r = loom_results_[i];
+      if (r.depth < 1) {
+        continue;
+      }
+
+#if LOOM_DEDUP_DEBUG
+      std::cerr << "LR id=" << i << " depth=" << r.depth
+                << " ts_idx=" << r.ts_idx << " op_idx=" << r.op_idx
+                << " op_output_idx=" << r.op_output_idx
+                << " pos_idx=" << r.pos_idx << std::endl;
+#endif
+
+      if (depth != r.depth || op_idx != r.op_idx || pos_idx != r.pos_idx) {
+        if (!args.empty()) {
+          CHECK_EQ(result_ids.size(), op_output_ts_idx_[op_idx].size());
+#if LOOM_DEDUP_DEBUG
+          std::cerr << "Adding op_idx=" << op_idx << " args=" << args
+                    << " result_ids=" << result_ids << std::endl;
+#endif
+          cached_calls_.emplace(std::make_pair(op_idx, args), result_ids);
+          result_ids.clear();
+          args.clear();
+        }
+
+        depth = r.depth;
+        op_idx = r.op_idx;
+        pos_idx = r.pos_idx;
+
+        // Collect the arguments for the current call.
+        for (tensor_idx_t arg_idx = 0;
+             arg_idx < op_input_ts_idx_[r.op_idx].size(); ++arg_idx) {
+          args.push_back(
+              wiring_results_[std::make_tuple(r.depth, r.op_idx, arg_idx)]
+                             [r.pos_idx]);
+        }
+      }
+      result_ids.push_back(i);
+    }
+    // Add the very last call.
+    if (op_idx != -1) {
+      CHECK_EQ(result_ids.size(), op_output_ts_idx_[op_idx].size());
+#if LOOM_DEDUP_DEBUG
+      std::cerr << "Adding op_idx=" << op_idx << " args=" << args
+                << " result_ids=" << result_ids << std::endl;
+#endif
+      cached_calls_.emplace(std::make_pair(op_idx, args), result_ids);
+    }
+  }
+
   return true;
 }
 
@@ -396,6 +510,13 @@ tensor_idx_t Weaver::GetNamedTensor(
                            " for typeshape ", ts_idx, ".");
     return -1;
   }
+  if (deduplicate_) {
+    auto it =
+        cached_named_tensors_.find(std::make_pair(ts_idx, named_tensor_idx));
+    if (it != cached_named_tensors_.end()) {
+      return it->second;
+    }
+  }
   tensor_idx_t result_id = loom_results_.size();
   loom_results_.emplace_back();
   LoomResult &r = loom_results_.back();
@@ -403,6 +524,10 @@ tensor_idx_t Weaver::GetNamedTensor(
   r.ts_idx = ts_idx;
   r.pos_idx = named_tensor_idx;
   r.op_idx = r.op_output_idx = -1;  // unused.
+  if (deduplicate_) {
+    cached_named_tensors_.emplace(std::make_pair(ts_idx, named_tensor_idx),
+                                  result_id);
+  }
   return result_id;
 }
 
@@ -499,6 +624,15 @@ tensor_idx_t Weaver::MakeConstant(tensor_idx_t ts_idx, const Tensor &tensor) {
     return -1;
   }
 
+  if (deduplicate_) {
+    auto it = cached_constant_values_.find(std::make_pair(ts_idx, tensor));
+    if (it != cached_constant_values_.end()) {
+      return it->second.result_id;
+    }
+  }
+
+  tensor_idx_t constant_value_idx =
+      constant_values_by_type_shape_[ts_idx].size();
   constant_values_by_type_shape_[ts_idx].push_back(tensor);
   tensor_idx_t result_id = loom_results_.size();
   loom_results_.emplace_back();
@@ -508,6 +642,13 @@ tensor_idx_t Weaver::MakeConstant(tensor_idx_t ts_idx, const Tensor &tensor) {
   r.pos_idx = num_named_tensors_by_ts_idx_[ts_idx] +
       num_constants_by_type_shape_[ts_idx]++;
   r.op_idx = r.op_output_idx = -1;  // unused.
+
+  if (deduplicate_) {
+    CachedConstantValueEntry entry{result_id, constant_value_idx, ts_idx};
+    cached_constant_values_.emplace(std::make_pair(ts_idx, tensor),
+                                    std::move(entry));
+  }
+
   return result_id;
 }
 
@@ -520,6 +661,13 @@ tensor_idx_t Weaver::BatchInput(tensor_idx_t ts_idx, tensor_idx_t batch_idx) {
         " because that TypeShape is not in batch mode.");
     return -1;
   }
+  if (deduplicate_) {
+    auto it =
+        cached_batch_input_.find(std::make_pair(ts_idx, batch_idx));
+    if (it != cached_batch_input_.end()) {
+      return it->second;
+    }
+  }
   tensor_idx_t result_id = loom_results_.size();
   loom_results_.emplace_back();
   LoomResult &r = loom_results_.back();
@@ -527,6 +675,10 @@ tensor_idx_t Weaver::BatchInput(tensor_idx_t ts_idx, tensor_idx_t batch_idx) {
   r.ts_idx = ts_idx;
   r.pos_idx = num_named_tensors_by_ts_idx_[ts_idx] + batch_idx;
   r.op_idx = r.op_output_idx = -1;  // unused.
+  if (deduplicate_) {
+    cached_batch_input_.emplace(std::make_pair(ts_idx, batch_idx),
+                                  result_id);
+  }
   return result_id;
 }
 
@@ -597,6 +749,13 @@ std::vector<tensor_idx_t> Weaver::CallOpInternal(
     deepest_ = depth;
   }
 
+  if (deduplicate_) {
+    auto it = cached_calls_.find(std::make_pair(op_idx, args));
+    if (it != cached_calls_.end()) {
+      return it->second;
+    }
+  }
+
   tensor_idx_t pos_idx = wiring_results_[
       std::make_tuple(depth, op_idx, 0)].size();
   for (tensor_idx_t i = 0; i < args.size(); ++i) {
@@ -619,6 +778,10 @@ std::vector<tensor_idx_t> Weaver::CallOpInternal(
       op_output_wiring_results_[std::make_tuple(depth, op_idx, i)].push_back(
           result_id);
     }
+  }
+
+  if (deduplicate_) {
+    cached_calls_.emplace(std::make_pair(op_idx, args), result_ids);
   }
 
   return result_ids;
@@ -667,6 +830,10 @@ bool Weaver::MergeFromSerialized(const string &other) {
     error_string_ =
         "WeaverMessage didn't have the same number of type-shapes.";
     return false;
+  }
+
+  if (deduplicate_) {
+    return MergeFromSerializedWithDeduplication(message);
   }
 
   // The loom_results_ from other will get appended to the current set of
@@ -762,6 +929,272 @@ bool Weaver::MergeFromSerialized(const string &other) {
     output_result_ids_.push_back(result_id_offset + result_id);
   }
   return true;
+}
+
+bool Weaver::MergeFromSerializedWithDeduplication(
+    const WeaverMessage &message) {
+  // Deserialize all the constants.
+  std::vector<std::vector<tensorflow::Tensor>> other_constant_values_by_ts(
+      num_type_shapes_);
+  for (tensor_idx_t ts_idx = 0; ts_idx < num_type_shapes_; ++ts_idx) {
+    Tensor constants(metadata_.type_shape_metadata(ts_idx).dtype());
+    if (!constants.FromProto(message.constant_values_by_type_shape(ts_idx))) {
+      error_string_ = StrCat(
+          "Conversion from TensorProto to Tensor failed in deserialization.  ",
+          "ts_idx=", ts_idx);
+      return false;
+    }
+    other_constant_values_by_ts[ts_idx] = UnstackTensors(constants);
+  }
+
+  // Deserialize LoomResults from the other message.
+  std::vector<LoomResult> other_results;
+  for (tensor_idx_t i = 0; i < message.depth_size(); ++i) {
+    other_results.emplace_back(LoomResultFromMessage(message, i));
+    // Update deepest_.
+    deepest_ = std::max(deepest_, other_results.back().depth);
+  }
+  std::vector<std::vector<tensor_idx_t>> other_results_by_depth(1);
+  for (tensor_idx_t i = 0; i < other_results.size(); ++i) {
+    tensor_idx_t depth = other_results[i].depth;
+    enlarge(&other_results_by_depth, depth);
+    other_results_by_depth[depth].push_back(i);
+  }
+
+  std::vector<tensor_idx_t> result_id_map(other_results.size(), -1);
+
+  // Key: depth, op_idx, pos_idx
+  // Value: args
+  std::unordered_map<std::tuple<tensor_idx_t, tensor_idx_t, tensor_idx_t>,
+                     std::vector<tensor_idx_t>>
+      other_calls;
+  for (const auto &w : message.wiring()) {
+    for (tensor_idx_t pos_idx = 0; pos_idx < w.result_id_size(); ++pos_idx) {
+      auto& args = other_calls[std::make_tuple(w.depth(), w.op_idx(), pos_idx)];
+      enlarge(&args, w.arg_idx());
+      args[w.arg_idx()] = w.result_id(pos_idx);
+    }
+  }
+
+  // Go through all LoomResults by depth.
+  // Depth 0:
+  // - Batch input
+  // - Named tensors
+  // - Constants
+  // Depth >0: CallOps
+  //
+  // For each LoomResult, allocate an ID:
+  // - An existing ID, if there's a suitable one
+  //   - Batch input: cached_batch_input_
+  //   - Named tensors: cached_named_tensors_
+  //   - Constants: cached_constant_values_
+  //   - CallOp: cached_calls_
+  // - A new ID, by appending to loom_result_.
+
+  for (tensor_idx_t id : other_results_by_depth[0]) {
+    LoomResult& r = other_results[id];
+    if (r.pos_idx < num_named_tensors_by_ts_idx_[r.ts_idx]) {
+      // Named tensor.
+      const auto &key = std::make_pair(r.ts_idx, r.pos_idx);
+      auto it = cached_named_tensors_.find(key);
+      if (it == cached_named_tensors_.end()) {
+        result_id_map[id] = loom_results_.size();
+        cached_named_tensors_.emplace(key, loom_results_.size());
+        loom_results_.push_back(r);
+      } else {
+        result_id_map[id] = it->second;
+      }
+    } else if (metadata_.type_shape_metadata(r.ts_idx).is_batch_input()) {
+      // Batch input.
+      const auto &key = std::make_pair(
+          r.ts_idx, r.pos_idx - num_named_tensors_by_ts_idx_[r.ts_idx]);
+      auto it = cached_batch_input_.find(key);
+      if (it == cached_batch_input_.end()) {
+        result_id_map[id] = loom_results_.size();
+        cached_batch_input_.emplace(key, loom_results_.size());
+        loom_results_.push_back(r);
+      } else {
+        result_id_map[id] = it->second;
+      }
+    } else {
+      // Constant.
+      const tensorflow::Tensor &tensor = other_constant_values_by_ts
+          [r.ts_idx][r.pos_idx - num_named_tensors_by_ts_idx_[r.ts_idx]];
+#if LOOM_DEDUP_DEBUG
+      std::cerr << "Processing constant LR with ID " << id << std::endl;
+      std::cerr << "Value: " << tensor.DebugString() << std::endl;
+#endif
+      const auto& key = std::make_pair(r.ts_idx, tensor);
+      auto it = cached_constant_values_.find(key);
+      if (it == cached_constant_values_.end()) {
+#if LOOM_DEDUP_DEBUG
+        std::cerr << "> Not found, new ID " << loom_results_.size()
+                  << std::endl;
+#endif
+        r.pos_idx = constant_values_by_type_shape_[r.ts_idx].size();
+        result_id_map[id] = loom_results_.size();
+        CachedConstantValueEntry ent{loom_results_.size(), r.pos_idx, r.ts_idx};
+        cached_constant_values_.emplace(key, std::move(ent));
+        loom_results_.push_back(r);
+        constant_values_by_type_shape_[r.ts_idx].push_back(std::move(tensor));
+        num_constants_by_type_shape_[r.ts_idx]++;
+      } else {
+#if LOOM_DEDUP_DEBUG
+        std::cerr << "> Found, existing ID " << it->second.result_id
+                  << std::endl;
+#endif
+        result_id_map[id] = it->second.result_id;
+      }
+    }
+  }
+
+  tensor_idx_t depth = -1, op_idx = -1, pos_idx = -1;
+  std::vector<tensor_idx_t> result_ids;
+  auto process_results = [&]() {
+    const auto& other_args =
+        other_calls[std::make_tuple(depth, op_idx, pos_idx)];
+    std::vector<tensor_idx_t> args;
+    for (tensor_idx_t arg : other_args) {
+      args.push_back(result_id_map[arg]);
+      CHECK_NE(args.back(), -1);
+    }
+
+    const auto &key = std::make_pair(op_idx, args);
+#if LOOM_DEDUP_DEBUG
+    std::cerr << "Looking for call to " << op_idx << " with args " << args
+              << std::endl;
+#endif
+    auto it = cached_calls_.find(key);
+    if (it == cached_calls_.end()) {
+      // Make new LoomResults.
+      tensor_idx_t new_pos_idx =
+          wiring_results_[std::make_tuple(depth, op_idx, 0)].size();
+      std::vector<tensor_idx_t> new_result_ids;
+      for (tensor_idx_t i = 0; i < result_ids.size(); ++i) {
+        LoomResult &r = other_results[result_ids[i]];
+        result_id_map[result_ids[i]] = loom_results_.size();
+        new_result_ids.push_back(loom_results_.size());
+        r.pos_idx = new_pos_idx;
+        loom_results_.push_back(r);
+      }
+      for (tensor_idx_t i = 0; i < args.size(); ++i) {
+        wiring_results_[std::make_tuple(depth, op_idx, i)].push_back(args[i]);
+      }
+      cached_calls_.emplace(key, new_result_ids);
+#if LOOM_DEDUP_DEBUG
+      std::cerr << "> Not found, creating results " << new_result_ids << std::endl;
+#endif
+    } else {
+#if LOOM_DEDUP_DEBUG
+      std::cerr << "> Found, existing";
+#endif
+      for (tensor_idx_t i = 0; i < result_ids.size(); ++i) {
+        result_id_map[result_ids[i]] = it->second[i];
+#if LOOM_DEDUP_DEBUG
+        std:: cerr << ' ' << it->second[i];
+#endif
+      }
+#if LOOM_DEDUP_DEBUG
+      std::cerr << std::endl;
+#endif
+    }
+    result_ids.clear();
+  };
+
+  for (depth = 1; depth < other_results_by_depth.size(); ++depth) {
+    for (tensor_idx_t id : other_results_by_depth[depth]) {
+      const LoomResult& lr = other_results[id];
+#if LOOM_DEDUP_DEBUG
+      std::cerr << "LR id=" << id << " depth=" << lr.depth
+                << " ts_idx=" << lr.ts_idx << " op_idx=" << lr.op_idx
+                << " op_output_idx=" << lr.op_output_idx
+                << " pos_idx=" << lr.pos_idx << std::endl;
+      std::cerr << "op_idx=" << op_idx << " pos_idx=" << pos_idx << std::endl;
+#endif
+      if (op_idx != other_results[id].op_idx ||
+          pos_idx != other_results[id].pos_idx) {
+        if (!result_ids.empty()) {
+          process_results();
+        }
+        op_idx = other_results[id].op_idx;
+        pos_idx = other_results[id].pos_idx;
+      }
+      result_ids.push_back(id);
+    }
+    if (op_idx != -1) {
+      process_results();
+    }
+  }
+
+  // Copy over outputs_result_ids (shifting by result_id_offset.)
+  for (tensor_idx_t result_id : message.output_result_id()) {
+    output_result_ids_.push_back(result_id_map[result_id]);
+  }
+  return true;
+
+#if 0
+  // See if any of the constants are the same.
+  // First, get all LoomResults which refer to constants.
+  //
+  // (ts_idx, pos_idx) -> LoomResult ID
+  // It might be fine to make this a map<ts_idx, vector<result_id>>
+  // if pos_idx and result_id are always in the same order.
+  std::unordered_map<std::pair<tensor_idx_t, tensor_idx_t>, tensor_idx_t>
+      other_constant_loom_result_ids;
+  for (tensor_idx_t i = 0; i < other_results.size(); ++i) {
+    const LoomResult& lr = std::get<0>(other_results[i]);
+    if (!metadata_.type_shape_metadata(lr.ts_idx).is_batch_input() &&
+        lr.depth == 0 &&
+        lr.pos_idx > num_named_tensors_by_ts_idx_[lr.ts_idx]) {
+      other_constant_loom_result_ids.emplace(
+          std::make_pair(
+              lr.ts_idx,
+              lr.pos_idx - num_named_tensors_by_ts_idx_[lr.ts_idx]),
+          i);
+    }
+  }
+
+  // Now, for each constant, see if it's the same as an existing constant.
+  // If so, remap all result IDs to be the same.
+  for (tensor_idx_t ts_idx = 0; ts_idx < num_type_shapes_; ++ts_idx) {
+    Tensor constants(metadata_.type_shape_metadata(ts_idx).dtype());
+    if (!constants.FromProto(message.constant_values_by_type_shape(ts_idx))) {
+      error_string_ = StrCat(
+          "Conversion from TensorProto to Tensor failed in deserialization.  ",
+          "ts_idx=", ts_idx);
+      return false;
+    }
+
+    auto unstacked = UnstackTensors(constants);
+    for (int i = 0; i < unstacked.size(); ++i) {
+      const auto other_id =
+          other_constant_loom_results_ids[std::make_pair(ts_idx, i)];
+      const auto& entry = other_results[other_id];
+      const auto& tensor = unstacked[i];
+
+      auto it = cached_constant_values_.find(std::make_pair(ts_idx, tensor));
+      if (it == cached_constant_values_.end()) {
+        constant_values_by_type_shape_[ts_idx].emplace_back(std::move(tensor));
+        std::get<0>(entry).pos_idx = num_constants_by_type_shape_[ts_idx]++;
+      } else {
+        // This is the new result ID number
+        std::get<1>(entry) = *it;
+        // Yes, this has been remapped
+        std::get<2>(entry) = true;
+      }
+    }
+  }
+
+  // Go through all LoomResults created through CallOp.
+  // For each LoomResult, we can find out:
+  // - op name
+  // - argument LoomResult numbers
+  //
+  // 1. Use CallOpInternal.
+  // Remap all argument LoomResults to their new numbers.
+  // Use CallOpInternal with the new argument numbers.
+  // Map the original LoomResultID to resulting result ID
+#endif
 }
 
 void Weaver::Finalize() {

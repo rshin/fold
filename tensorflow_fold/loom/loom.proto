@@ -52,6 +52,7 @@ message LoomMetadata {
   repeated OpMetadata op_metadata = 3;
 
   optional bool use_tensor_array = 4;
+  optional bool deduplicate = 5;
 }
 
 // WeaverMessage contains the wiring diagram (or schedule) which drives the
@@ -72,7 +73,10 @@ message WeaverMessage {
   // The constants of each type-shape are stacked along their 0'th dimensions
   // and then converted to TensorProto to serialize.
   repeated tensorflow.TensorProto constant_values_by_type_shape = 10;
-
+  message ResultIds {
+    repeated int32 result_id = 1 [packed=true];
+  }
+  repeated ResultIds constant_values_result_ids = 12;
 
   message WiringMessage {
     // The values of the `wiring_results_` field from Weaver

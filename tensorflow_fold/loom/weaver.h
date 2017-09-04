@@ -16,17 +16,26 @@ limitations under the License.
 #include <map>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow_fold/loom/loom.pb.h"
+#include "tensorflow_fold/loom/hashes.h"
 
 #if !defined(SWIG)
 #include "tensorflow_fold/loom/platform.h"
 #endif
 
+
 namespace tensorflow {
+
+inline bool operator==(const tensorflow::Tensor &t1,
+                       const tensorflow::Tensor &t2) {
+  return t1.shape() == t2.shape() && t1.tensor_data() == t2.tensor_data();
+}
+
 namespace fold {
 
 // We use int32 to reduce memory pressure and improve GPU performance.
@@ -55,9 +64,8 @@ struct LoomResult {
   // op_output_idx: Which output of this op the result refers to.
   tensor_idx_t op_output_idx;
 
-  // pos_idx: 1) Which call of this op the result refers to, or 2) if
-  // use_tensor_array_ then the index of this LoomResult in
-  // loom_results_, or 3) which constant it refers of this shape it refers to.
+  // pos_idx: Which call of this op the result refers to, or which constant it
+  // refers of this shape it refers to.
   tensor_idx_t pos_idx;
 
   // cached_passthrough: which LoomResult ID we got by calling pass_through on
@@ -72,6 +80,16 @@ struct TypeShape {
   tensorflow::TensorShape shape;
   string name;
 };
+
+struct CachedConstantValueEntry {
+  // LoomResult ID (i.e. index into loom_results_).
+  tensor_idx_t result_id;
+  // Index into constant_values_by_type_shape_.
+  tensor_idx_t constant_value_idx;
+  // Type shape index.
+  tensor_idx_t ts_idx;
+};
+
 // END_SKIP_DOXYGEN
 
 /// Validates a LoomMetadata proto.
@@ -326,6 +344,8 @@ class Weaver {
       tensor_idx_t op_idx, const std::vector<tensor_idx_t> &args,
       tensor_idx_t max_arg_depth);
 
+  bool MergeFromSerializedWithDeduplication(const WeaverMessage& message);
+
   // Repeatedly call the pass-through op of the appropriate type_shape until
   // the result with ID `result_id` has been promoted to `target_depth`.
   //
@@ -348,6 +368,9 @@ class Weaver {
   // Whether we will be using TensorArrays, and therefore deepening is not
   // required.
   bool use_tensor_array_;
+
+  // Whether to deduplicate things.
+  bool deduplicate_;
 
   // The number of TypeShapes this loom supports.
   tensor_idx_t num_type_shapes_;
@@ -387,6 +410,24 @@ class Weaver {
   // metadata.type_shape_metadata.shape()
   std::vector<std::vector<tensorflow::Tensor> > constant_values_by_type_shape_;
 
+  // Key: type shape ID, index
+  std::unordered_map<std::pair<tensor_idx_t, tensor_idx_t>, tensor_idx_t>
+     cached_named_tensors_;
+
+  // Key: type shape ID, index
+  std::unordered_map<std::pair<tensor_idx_t, tensor_idx_t>, tensor_idx_t>
+     cached_batch_input_;
+
+  // Key: type shape ID, tensor content
+  std::unordered_map<std::pair<tensor_idx_t, tensorflow::Tensor>,
+                     CachedConstantValueEntry>
+      cached_constant_values_;
+
+  // Key: op_idx, result IDs of arguments
+  std::unordered_map<std::pair<tensor_idx_t, std::vector<tensor_idx_t>>,
+                     std::vector<tensor_idx_t>>
+      cached_calls_;
+
   // loom_results_: The LoomResults created thus far.  Result IDs index into
   // this vector.
   std::vector<LoomResult> loom_results_;
@@ -400,6 +441,8 @@ class Weaver {
   std::map<std::tuple<tensor_idx_t, tensor_idx_t, tensor_idx_t>,
            std::vector<tensor_idx_t> > wiring_results_;
 
+  // Key: depth, op_idx, op_output_idx
+  // Value: LoomResult IDs for those calls
   std::map<std::tuple<tensor_idx_t, tensor_idx_t, tensor_idx_t>,
            std::vector<tensor_idx_t> > op_output_wiring_results_;
 

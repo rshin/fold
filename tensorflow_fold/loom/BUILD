@@ -48,7 +48,7 @@ fold_cc_library(
 fold_cc_library(
     name = "weaver",
     srcs = ["weaver.cc"],
-    hdrs = ["weaver.h"],
+    hdrs = ["weaver.h", "hashes.h"],
     deps = [
         ":loom_proto",
         ":platform",
