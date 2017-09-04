@@ -1072,9 +1072,15 @@ bool Weaver::MergeFromSerializedWithDeduplication(
           wiring_results_[std::make_tuple(depth, op_idx, 0)].size();
       std::vector<tensor_idx_t> new_result_ids;
       for (tensor_idx_t i = 0; i < result_ids.size(); ++i) {
+        const tensor_idx_t result_id = loom_results_.size();
+        result_id_map[result_ids[i]] = result_id;
+        new_result_ids.push_back(result_id);
+        if (use_tensor_array_) {
+          op_output_wiring_results_[std::make_tuple(depth, op_idx, i)]
+              .push_back(result_id);
+        }
+
         LoomResult &r = other_results[result_ids[i]];
-        result_id_map[result_ids[i]] = loom_results_.size();
-        new_result_ids.push_back(loom_results_.size());
         r.pos_idx = new_pos_idx;
         loom_results_.push_back(r);
       }

@@ -588,6 +588,13 @@ class LoomTestWithDeduplicate(LoomTest):
     LoomTest.setUp(self)
     self.deduplicate = True
 
+class LoomTestWithDeduplicateTensorArrays(LoomTest):
+
+  def setUp(self):
+    LoomTest.setUp(self)
+    self.deduplicate = True
+    self.use_tensor_array = True
+
 
 if __name__ == '__main__':
   tf.test.main()
